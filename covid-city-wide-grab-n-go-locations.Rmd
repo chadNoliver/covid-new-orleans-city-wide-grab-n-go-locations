@@ -1,0 +1,211 @@
+---
+title: Covid City Wide Grab-N-Go Locations
+author: ~
+date: '2020-03-17'
+slug: covid-city-wide-grab-n-go-locations
+categories: []
+tags: []
+comments: no
+images: ~
+---
+
+In response to COVID-19 and the closing of all New Orleans schools, The City of New Orleans enacted a City Wide Grab-N-Go Locations for all New Orleans school students.  The locations can be mapped, along with ACS data as follows:
+
+##City Wide Grab-N-Go Locations
+The City of New Orleans 
+
+```{r, read }
+
+library(readr) # for read_csv
+library(magrittr) # for %>%
+library(stringr) # for str_detect
+library(dplyr) # for mutate
+library(censusxy) # for cxy_geocode
+library(tidygeocoder) # for geocode
+library(leaflet) # for leaflet
+
+locations <- read_csv("data/locations.csv")
+
+locations <- locations %>% 
+  mutate(address.edit = ifelse(address=="2067 Caton St, New Orleans",
+                          "2067 Caton St, New Orleans, LA, 70122",
+                          
+                          ifelse(address=="1800 Monroe St., New Orleans, Louisiana 70118",
+                                 "1800 Monroe St., New Orleans, LA 70118",
+                                 
+                                 address
+                          )
+  ),
+  #address.street = str_to_upper(str_sub(address.edit,1,str_locate(address.edit,",")[,1]-1)),
+  address.street = address.edit,
+  address.city = str_to_upper("New Orleans"),
+  address.state = str_to_upper("LA"),
+  address.zip = str_sub(address.edit,-5,-1),
+  address.geo = paste0(address.street,", ",address.city,", ",address.state, " ", address.zip)
+  )
+
+# View(as_tibble(locations))
+# 
+View(locations)
+
+locations.sf <- locations %>% 
+  tidygeocoder::geocode(address, "cascade")
+
+?tidygeocoder::geocode()
+
+View(locations.sf)
+
+
+
+locations_sf <- cxy_geocode(as_tibble(locations),
+                            address="address.street",
+                            city="address.city",
+                            state="address.state",
+                            zip="address.zip",
+                            style="minimal",
+                            output="sf",
+                            timeout = 10
+                            )
+
+leaflet(locations.sf) %>% 
+  addProviderTiles(providers$Stamen.Toner) %>% 
+  addCircles(lng = locations.sf$long, 
+                   lat = locations.sf$lat, radius = 1609.344)
+
+
+
+```
+
+## Nursery School - 12th Grade Students by Census block
+
+```{r census-api-key}
+options(tigris_use_cache = TRUE)
+key <-  read.delim(file="~/private/Census Api Key.txt",header=FALSE)
+Sys.setenv(census_api_key=key[[1]])
+```
+
+
+```{r census-data}
+library (classInt) #for Jenks breaks
+library(tidycensus) #for get acs
+library(sf)
+
+acs.school.k12 <- c(
+  
+  #Estimate!!
+  #Total!!
+  #Income in the past 12 months below the poverty level!!
+  #Enrolled in school!!
+  #Enrolled in...
+  
+  "B14006_005E", #kindergarten
+  
+  "B14006_006E", #grade 1 to grade 4
+  
+  "B14006_007E", #grade 5 to grade 8
+  
+  "B14006_008E" #grade 9 to grade 12
+  )
+
+
+acs.school.k12.tract <- st_as_sf(
+  get_acs(
+    geography="tract",
+    state = "LA",
+    county = "Orleans Parish",
+    variables=acs.school.k12,
+    geometry=TRUE)
+  )
+View(acs.school.k12.tract)
+
+acs.school.k12.tract <- acs.school.k12.tract %>%
+  group_by(GEOID,NAME) %>% 
+  summarize(tract_estimate = round(sum(estimate),2),
+            tract_moe = round(moe_sum(moe,estimate=estimate),2)
+            )
+
+acs.school.k12.tract <- acs.school.k12.tract %>% 
+  ungroup() %>% 
+  mutate(
+    tract_area=st_area(geometry)* 0.000000386102159,
+    tract_estimate_density = round((tract_estimate/tract_area),2),
+    tract_moe_density = round((tract_moe/tract_area),2)
+  )
+
+# n.distinct.tract <- acs.school.k12.tract %>% 
+#   summarize(n_distinct(NAME))
+# 
+# k12.means <- acs.school.k12.tract %>%
+#   summarize(min = min(tract_estimate),
+#             p25 = quantile(tract_estimate, 0.25),
+#             median = median(tract_estimate),
+#             mean = mean(tract_estimate),
+#             sd = sd(tract_estimate),
+#             p75 = quantile(tract_estimate, 0.75),
+#             max = max(tract_estimate)
+#             )
+
+k12.intervals <- classIntervals(acs.school.k12.tract$tract_estimate,n=7,style="jenks")
+
+st_crs(acs.school.k12.tract)
+k12.sum <- acs.school.k12.tract %>% 
+  summarize(sum=sum(tract_estimate))
+
+View(k12.intervals)
+
+d <- k12.intervals[2][[1]]
+
+
+
+make.map <- function(c,h,a,d,o){
+  
+#  c: Data Set
+#  h: Data Set With Quantitative Column
+#  a: Label
+#  d: Color Bins
+#  o: Destination
+
+  labels <- a
+  bins <- d
+  pal <- colorBin("GnBu", domain=h , bins = bins)
+
+  m <- leaflet(c,padding = 0,width=800,height=800,
+                 sizingPolicy=leafletSizingPolicy(browser.fill=TRUE)
+                               )%>%
+    addProviderTiles(providers$Stamen.Toner) %>%
+
+    addPolygons(
+      fillColor = ~pal(h),
+      weight= 0.5,
+      smoothFactor = 0,
+      opacity = 1,
+      color = "black",
+      fillOpacity = 0.7,
+      highlight = highlightOptions(
+        weight = 5,
+        color = "black",
+        fillOpacity = 0.9,
+        bringToFront = TRUE),
+      label = labels,
+      labelOptions = labelOptions(
+        style = list("font-weight" = "normal", padding = "3px 8px"),
+        textsize = "15px",
+       direction = "auto"
+        )
+      ) %>%
+    addLegend(pal = pal, values = ~h, opacity = 0.9, title = NULL,
+              position = "bottomright"
+              )
+}
+acs.school.k12.tract <- sf::st_transform(acs.school.k12.tract,4326)
+
+map.it <- make.map(c=acs.school.k12.tract,
+         h=acs.school.k12.tract$tract_estimate,
+         a=acs.school.k12.tract$NAME,
+         d=d)
+
+map.it
+```
+
+
+##3 
